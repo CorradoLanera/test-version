@@ -1,0 +1,190 @@
+---
+title: "Report Modifiche e Diff"
+date: last-modified
+format: 
+  docx: default
+toc: true
+params:
+  tag_start: "v1.0"
+  tag_end: "HEAD"
+editor: source
+---
+
+
+Quando hai finito il lavoro, hai chiuso i tuoi issue e vuoi generare il report (es. stai passando dalla `v1` alla `v2`):
+
+1.  Apri la console di Positron/RStudio (o R).
+2.  Lancia questo comando:
+
+```r
+quarto::quarto_render(
+  input = "changelog.qmd",
+  output_file = "Report_Modifiche_v1_v2.docx",
+  execute_params = list(
+    tag_start = "v1",  # Il tag (o hash commit) di partenza
+    tag_end = "v2"     # Il tag (o hash commit) attuale
+  )
+)
+
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(flextable)
+library(stringr)
+library(tibble)
+
+# Funzione per eseguire comandi git
+git_cmd <- function(args) {
+  system2("git", args, stdout = TRUE, stderr = TRUE)
+}
+```
+
+## Dettagli Rilascio
+
+* **Versione Precedente:** `r params$tag_start`
+* **Versione Attuale:** `r params$tag_end`
+* **Data Generazione:** `r format(Sys.time(), "%d/%m/%Y %H:%M")`
+
+## 1. Issue Risolti
+
+Elenco degli Issue citati nei commit tra le due versioni.
+
+```{r get_issues}
+# 1. Recupera i messaggi di log tra i due tag
+logs <- git_cmd(str_glue(
+  "log {params$tag_start}..{params$tag_end} --pretty=format:%s"
+))
+
+# Estrae i pattern tipo #12, #45
+issues_found <- logs |> 
+  str_extract_all("#\\d+") |> unlist() |> unique() |> sort()
+
+if (length(issues_found) > 0) {
+  # Crea una tabella pulita
+  tibble(Issue_ID = issues_found) |> 
+    arrange(Issue_ID) |> 
+    flextable() |> 
+    set_header_labels(Issue_ID = "Issue Completati") |> 
+    autofit() |> 
+    theme_vanilla()
+} else {
+  cat(
+    "Nessun riferimento a issue nei commit nell'intervallo considerato."
+  )
+}
+```
+
+## 2. Diff del Codice (Netto)
+
+Le modifiche riportate qui sotto rappresentano la differenza netta tra l'inizio e la fine (ignorando quindi i commit intermedi).
+
+```{r get_diff}
+# Ottieni il diff grezzo
+# -U0 riduce il contesto per risparmiare spazio nel Word
+raw_diff <- git_cmd(str_glue(
+  "diff -U1 {params$tag_start} {params$tag_end}"
+))
+
+# Parsing del diff per la visualizzazione a due colonne
+process_diff_to_table <- function(raw_lines) {
+
+  diff_data <- tibble(
+    Old = character(),
+    New = character(),
+    File = character()
+  )
+  current_file <- "Unknown"
+
+  left_col <- c()
+  right_col <- c()
+
+  flush_buffers <- function(l, r, f, existing_df) {
+    if (length(l) == 0 && length(r) == 0) return(existing_df)
+    
+    # Pareggia la lunghezza riempiendo con vuoti
+    max_len <- max(length(l), length(r))
+    l <- c(l, rep("", max_len - length(l)))
+    r <- c(r, rep("", max_len - length(r)))
+
+    existing_df |> 
+      bind_rows(tibble(Old = l, New = r, File = f))
+  }
+
+  for (line in raw_lines) {
+    # Rileva cambio file
+    if (str_detect(line, "^diff --git")) {
+      # Salva il blocco precedente se esiste
+      diff_data <- flush_buffers(
+        left_col, right_col, current_file, diff_data
+      )
+      left_col <- c()
+      right_col <- c()
+
+      # Estrai nome file (semplificato)
+      current_file <- str_extract(line, " b/.*$") |>
+        str_replace(" b/", "")
+      
+      diff_data <- diff_data |> 
+        bind_rows(
+          tibble(
+            Old = "**FILE CHANGE**",
+            New = paste("File:", current_file),
+            File = current_file)
+          )
+      next
+    }
+
+    # Ignora metadati git
+    if (
+      line |> 
+        str_detect("^(index|new file|deleted file|---|\\+\\+\\+)")
+    ) {
+      next
+    }
+
+    # Gestione righe codice
+    if (str_starts(line, "-")) {
+      left_col <- c(left_col, str_remove(line, "^-"))
+    } else if (str_starts(line, "\\+")) {
+      right_col <- c(right_col, str_remove(line, "^\\+"))
+    } else if (str_starts(line, "@@")) {
+      # Separatore di chunk
+      diff_data <- flush_buffers(
+        left_col, right_col, current_file, diff_data
+      )
+      left_col <- c()
+      right_col <- c()
+      
+      diff_data <- diff_data |> 
+        bind_rows(tibble(Old = "...", New = "...", File = current_file))
+    } else {
+      # Context lines (spazio iniziale)
+      clean_line <- str_remove(line, "^ ")
+      left_col <- c(left_col, clean_line)
+      right_col <- c(right_col, clean_line)
+    }
+  }
+  
+  flush_buffers(left_col, right_col, current_file, diff_data)
+}
+
+df_diff <- process_diff_to_table(raw_diff)
+
+if (nrow(df_diff) > 0) {
+  df_diff |>
+    select(Old, New) |> 
+    flextable() |> 
+    set_header_labels(
+      Old = "Versione Precedente",
+      New = "Versione Attuale") |> 
+    theme_box() |> 
+    fontsize(size = 8) |> 
+    font(fontname = "Courier New") |>  # Monospace per il codice
+    autofit()
+} else {
+  cat("Nessuna modifica al codice rilevata.")
+}
+```
