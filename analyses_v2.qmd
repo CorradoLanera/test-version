@@ -7,7 +7,7 @@ format: html
 ## 🧭 Navigazione Versioni
 | **⏮️ Precedente** | **📍 Questo File** | **⏭️ Successivo** |
 |:---:|:---:|:---:|
-| `nessuno` | **** | `analyses_v2.qmd` |
+| `analyses.qmd` | **analyses_v2.qmd** | `(da assegnare)` |
 :::
 
 # 📝 DIARIO DELLE MODIFICHE
